@@ -5,7 +5,6 @@ use index_scheduler::IndexScheduler;
 use meilisearch_types::deserr::DeserrJsonError;
 use meilisearch_types::error::ResponseError;
 use meilisearch_types::index_uid::IndexUid;
-use meilisearch_types::milli::update::Setting;
 use meilisearch_types::settings::{
     settings, SecretPolicy, SettingEmbeddingSettings, Settings, Unchecked,
 };
@@ -28,6 +27,12 @@ use crate::Opt;
 /// It also generates a `configure` function that configures the routes for the settings.
 macro_rules! make_setting_routes {
     ($({route: $route:literal, update_verb: $update_verb:ident, value_type: $type:ty, err_type: $err_ty:ty, attr: $attr:ident, camelcase_attr: $camelcase_attr:literal, analytics: $analytics:ident},)*) => {
+        const _: fn(&meilisearch_types::settings::Settings<meilisearch_types::settings::Unchecked>) = |s| {
+            // This pattern match will fail at compile time if any field in Settings is not listed in the macro
+            match *s {
+                meilisearch_types::settings::Settings { $($attr: _,)* _kind: _ } => {}
+            }
+        };
         $(
             make_setting_route!($route, $update_verb, $type, $err_ty, $attr, $camelcase_attr, $analytics);
         )*
@@ -61,7 +66,7 @@ macro_rules! make_setting_routes {
 
 #[macro_export]
 macro_rules! make_setting_route {
-    ($route:literal, $update_verb:ident, $type:ty, $err_ty:ty, $attr:ident, $camelcase_attr:literal, $analytics:ident) => {
+    ($route:literal, $update_verb:ident, $type:ty, $err_type:ty, $attr:ident, $camelcase_attr:literal, $analytics:ident) => {
         pub mod $attr {
             use actix_web::web::Data;
             use actix_web::{web, HttpRequest, HttpResponse, Resource};
@@ -86,6 +91,7 @@ macro_rules! make_setting_route {
                 path = concat!("{indexUid}/settings", $route),
                 tag = "Settings",
                 security(("Bearer" = ["settings.update", "settings.*", "*"])),
+                operation_id = concat!("delete", $camelcase_attr),
                 summary = concat!("Reset ", $camelcase_attr),
                 description = concat!("Reset an index's ", $camelcase_attr, " to its default value"),
                 params(("indexUid", example = "movies", description = "Index Unique Identifier", nullable = false)),
@@ -149,6 +155,7 @@ macro_rules! make_setting_route {
                 path = concat!("{indexUid}/settings", $route),
                 tag = "Settings",
                 security(("Bearer" = ["settings.update", "settings.*", "*"])),
+                operation_id = concat!(stringify!($update_verb), $camelcase_attr),
                 summary = concat!("Update ", $camelcase_attr),
                 description = concat!("Update an index's user defined ", $camelcase_attr),
                 params(("indexUid", example = "movies", description = "Index Unique Identifier", nullable = false)),
@@ -179,7 +186,7 @@ macro_rules! make_setting_route {
                     Data<IndexScheduler>,
                 >,
                 index_uid: actix_web::web::Path<String>,
-                body: deserr::actix_web::AwebJson<Option<$type>, $err_ty>,
+                body: deserr::actix_web::AwebJson<Option<$type>, $err_type>,
                 req: HttpRequest,
                 opt: web::Data<Opt>,
                 analytics: web::Data<Analytics>,
@@ -236,6 +243,7 @@ macro_rules! make_setting_route {
                 summary = concat!("Get ", $camelcase_attr),
                 description = concat!("Get an user defined ", $camelcase_attr),
                 security(("Bearer" = ["settings.get", "settings.*", "*"])),
+                operation_id = concat!("get", $camelcase_attr),
                 params(("indexUid", example = "movies", description = "Index Unique Identifier", nullable = false)),
                 responses(
                     (status = 200, description = concat!($camelcase_attr, " is returned"), body = $type, content_type = "application/json", example = json!(
@@ -708,10 +716,7 @@ pub async fn delete_all(
 
 fn validate_settings(
     settings: Settings<Unchecked>,
-    index_scheduler: &IndexScheduler,
+    _index_scheduler: &IndexScheduler,
 ) -> Result<Settings<Unchecked>, ResponseError> {
-    if matches!(settings.embedders, Setting::Set(_)) {
-        index_scheduler.features().check_vector("Passing `embedders` in settings")?
-    }
     Ok(settings.validate()?)
 }

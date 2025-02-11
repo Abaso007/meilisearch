@@ -47,11 +47,15 @@ pub(crate) enum Batch {
     IndexSwap {
         task: Task,
     },
+    UpgradeDatabase {
+        tasks: Vec<Task>,
+    },
 }
 
 #[derive(Debug)]
 pub(crate) enum DocumentOperation {
-    Add(Uuid),
+    Replace(Uuid),
+    Update(Uuid),
     Delete(Vec<String>),
 }
 
@@ -61,7 +65,6 @@ pub(crate) enum IndexOperation {
     DocumentOperation {
         index_uid: String,
         primary_key: Option<String>,
-        method: IndexDocumentsMethod,
         operations: Vec<DocumentOperation>,
         tasks: Vec<Task>,
     },
@@ -105,6 +108,7 @@ impl Batch {
             }
             Batch::SnapshotCreation(tasks)
             | Batch::TaskDeletions(tasks)
+            | Batch::UpgradeDatabase { tasks }
             | Batch::IndexDeletion { tasks, .. } => {
                 RoaringBitmap::from_iter(tasks.iter().map(|task| task.uid))
             }
@@ -138,6 +142,7 @@ impl Batch {
             | TaskDeletions(_)
             | SnapshotCreation(_)
             | Dump(_)
+            | UpgradeDatabase { .. }
             | IndexSwap { .. } => None,
             IndexOperation { op, .. } => Some(op.index_uid()),
             IndexCreation { index_uid, .. }
@@ -162,6 +167,7 @@ impl fmt::Display for Batch {
             Batch::IndexUpdate { .. } => f.write_str("IndexUpdate")?,
             Batch::IndexDeletion { .. } => f.write_str("IndexDeletion")?,
             Batch::IndexSwap { .. } => f.write_str("IndexSwap")?,
+            Batch::UpgradeDatabase { .. } => f.write_str("UpgradeDatabase")?,
         };
         match index_uid {
             Some(name) => f.write_fmt(format_args!(" on {name:?} from tasks: {tasks:?}")),
@@ -248,7 +254,7 @@ impl IndexScheduler {
                     _ => unreachable!(),
                 }
             }
-            BatchKind::DocumentOperation { method, operation_ids, .. } => {
+            BatchKind::DocumentOperation { operation_ids, .. } => {
                 let tasks = self.queue.get_existing_tasks_for_processing_batch(
                     rtxn,
                     current_batch,
@@ -270,9 +276,17 @@ impl IndexScheduler {
 
                 for task in tasks.iter() {
                     match task.kind {
-                        KindWithContent::DocumentAdditionOrUpdate { content_file, .. } => {
-                            operations.push(DocumentOperation::Add(content_file));
-                        }
+                        KindWithContent::DocumentAdditionOrUpdate {
+                            content_file, method, ..
+                        } => match method {
+                            IndexDocumentsMethod::ReplaceDocuments => {
+                                operations.push(DocumentOperation::Replace(content_file))
+                            }
+                            IndexDocumentsMethod::UpdateDocuments => {
+                                operations.push(DocumentOperation::Update(content_file))
+                            }
+                            _ => unreachable!("Unknown document merging method"),
+                        },
                         KindWithContent::DocumentDeletion { ref documents_ids, .. } => {
                             operations.push(DocumentOperation::Delete(documents_ids.clone()));
                         }
@@ -284,7 +298,6 @@ impl IndexScheduler {
                     op: IndexOperation::DocumentOperation {
                         index_uid,
                         primary_key,
-                        method,
                         operations,
                         tasks,
                     },
@@ -427,9 +440,24 @@ impl IndexScheduler {
         let mut current_batch = ProcessingBatch::new(batch_id);
 
         let enqueued = &self.queue.tasks.get_status(rtxn, Status::Enqueued)?;
-        let to_cancel = self.queue.tasks.get_kind(rtxn, Kind::TaskCancelation)? & enqueued;
+        let failed = &self.queue.tasks.get_status(rtxn, Status::Failed)?;
+
+        // 0. The priority over everything is to upgrade the instance
+        // There shouldn't be multiple upgrade tasks but just in case we're going to batch all of them at the same time
+        let upgrade = self.queue.tasks.get_kind(rtxn, Kind::UpgradeDatabase)? & (enqueued | failed);
+        if !upgrade.is_empty() {
+            let mut tasks = self.queue.tasks.get_existing_tasks(rtxn, upgrade)?;
+            // In the case of an upgrade database batch, we want to find back the original batch that tried processing it
+            // and re-use its id
+            if let Some(batch_uid) = tasks.last().unwrap().batch_uid {
+                current_batch.uid = batch_uid;
+            }
+            current_batch.processing(&mut tasks);
+            return Ok(Some((Batch::UpgradeDatabase { tasks }, current_batch)));
+        }
 
         // 1. we get the last task to cancel.
+        let to_cancel = self.queue.tasks.get_kind(rtxn, Kind::TaskCancelation)? & enqueued;
         if let Some(task_id) = to_cancel.max() {
             let mut task =
                 self.queue.tasks.get_task(rtxn, task_id)?.ok_or(Error::CorruptedTaskQueue)?;

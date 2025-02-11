@@ -5,7 +5,7 @@ use maplit::hashset;
 use milli::documents::mmap_from_objects;
 use milli::progress::Progress;
 use milli::update::new::indexer;
-use milli::update::{IndexDocumentsMethod, IndexerConfig, Settings};
+use milli::update::{IndexerConfig, Settings};
 use milli::vector::EmbeddingConfigs;
 use milli::{FacetDistribution, Index, Object, OrderBy};
 use serde_json::{from_value, json};
@@ -15,7 +15,7 @@ fn test_facet_distribution_with_no_facet_values() {
     let path = tempfile::tempdir().unwrap();
     let mut options = EnvOpenOptions::new();
     options.map_size(10 * 1024 * 1024); // 10 MB
-    let index = Index::new(options, &path).unwrap();
+    let index = Index::new(options, &path, true).unwrap();
 
     let mut wtxn = index.write_txn().unwrap();
     let config = IndexerConfig::default();
@@ -36,7 +36,7 @@ fn test_facet_distribution_with_no_facet_values() {
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
     let embedders = EmbeddingConfigs::default();
-    let mut indexer = indexer::DocumentOperation::new(IndexDocumentsMethod::ReplaceDocuments);
+    let mut indexer = indexer::DocumentOperation::new();
 
     let doc1: Object = from_value(
         json!({ "id": 123, "title": "What a week, hu...", "genres": [], "tags": ["blue"] }),
@@ -47,7 +47,7 @@ fn test_facet_distribution_with_no_facet_values() {
     let documents = mmap_from_objects(vec![doc1, doc2]);
 
     // index documents
-    indexer.add_documents(&documents).unwrap();
+    indexer.replace_documents(&documents).unwrap();
 
     let indexer_alloc = Bump::new();
     let (document_changes, _operation_stats, primary_key) = indexer

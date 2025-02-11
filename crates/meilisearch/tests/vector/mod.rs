@@ -1,4 +1,6 @@
 mod binary_quantized;
+#[cfg(feature = "test-ollama")]
+mod ollama;
 mod openai;
 mod rest;
 mod settings;
@@ -13,36 +15,13 @@ use crate::common::{default_settings, GetAllDocumentsOptions, Server};
 use crate::json;
 
 async fn get_server_vector() -> Server {
-    let server = Server::new().await;
-    let (value, code) = server.set_features(json!({"vectorStore": true})).await;
-    snapshot!(code, @"200 OK");
-    snapshot!(value, @r###"
-  {
-    "vectorStore": true,
-    "metrics": false,
-    "logsRoute": false,
-    "editDocumentsByFunction": false,
-    "containsFilter": false
-  }
-  "###);
-    server
+    Server::new().await
 }
 
 #[actix_rt::test]
 async fn add_remove_user_provided() {
     let server = Server::new().await;
     let index = server.index("doggo");
-    let (value, code) = server.set_features(json!({"vectorStore": true})).await;
-    snapshot!(code, @"200 OK");
-    snapshot!(value, @r###"
-    {
-      "vectorStore": true,
-      "metrics": false,
-      "logsRoute": false,
-      "editDocumentsByFunction": false,
-      "containsFilter": false
-    }
-    "###);
 
     let (response, code) = index
         .update_settings(json!({
@@ -55,7 +34,7 @@ async fn add_remove_user_provided() {
         }))
         .await;
     snapshot!(code, @"202 Accepted");
-    server.wait_task(response.uid()).await;
+    server.wait_task(response.uid()).await.succeeded();
 
     let documents = json!([
       {"id": 0, "name": "kefir", "_vectors": { "manual": [0, 0, 0] }},
@@ -63,7 +42,7 @@ async fn add_remove_user_provided() {
     ]);
     let (value, code) = index.add_documents(documents, None).await;
     snapshot!(code, @"202 Accepted");
-    index.wait_task(value.uid()).await;
+    index.wait_task(value.uid()).await.succeeded();
 
     let (documents, _code) = index
         .get_all_documents(GetAllDocumentsOptions { retrieve_vectors: true, ..Default::default() })
@@ -116,7 +95,7 @@ async fn add_remove_user_provided() {
     ]);
     let (value, code) = index.add_documents(documents, None).await;
     snapshot!(code, @"202 Accepted");
-    index.wait_task(value.uid()).await;
+    index.wait_task(value.uid()).await.succeeded();
 
     let (documents, _code) = index
         .get_all_documents(GetAllDocumentsOptions { retrieve_vectors: true, ..Default::default() })
@@ -159,7 +138,7 @@ async fn add_remove_user_provided() {
 
     let (value, code) = index.delete_document(0).await;
     snapshot!(code, @"202 Accepted");
-    index.wait_task(value.uid()).await;
+    index.wait_task(value.uid()).await.succeeded();
 
     let (documents, _code) = index
         .get_all_documents(GetAllDocumentsOptions { retrieve_vectors: true, ..Default::default() })
@@ -187,17 +166,6 @@ async fn add_remove_user_provided() {
 
 async fn generate_default_user_provided_documents(server: &Server) -> Index {
     let index = server.index("doggo");
-    let (value, code) = server.set_features(json!({"vectorStore": true})).await;
-    snapshot!(code, @"200 OK");
-    snapshot!(value, @r###"
-    {
-      "vectorStore": true,
-      "metrics": false,
-      "logsRoute": false,
-      "editDocumentsByFunction": false,
-      "containsFilter": false
-    }
-    "###);
 
     let (response, code) = index
         .update_settings(json!({
@@ -221,7 +189,7 @@ async fn generate_default_user_provided_documents(server: &Server) -> Index {
     ]);
     let (value, code) = index.add_documents(documents, None).await;
     snapshot!(code, @"202 Accepted");
-    index.wait_task(value.uid()).await;
+    index.wait_task(value.uid()).await.succeeded();
 
     index
 }
@@ -618,7 +586,7 @@ async fn clear_documents() {
     let index = generate_default_user_provided_documents(&server).await;
 
     let (value, _code) = index.clear_all_documents().await;
-    index.wait_task(value.uid()).await;
+    index.wait_task(value.uid()).await.succeeded();
 
     // Make sure the documents DB has been cleared
     let (documents, _code) = index
@@ -654,17 +622,6 @@ async fn add_remove_one_vector_4588() {
     // https://github.com/meilisearch/meilisearch/issues/4588
     let server = Server::new().await;
     let index = server.index("doggo");
-    let (value, code) = server.set_features(json!({"vectorStore": true})).await;
-    snapshot!(code, @"200 OK");
-    snapshot!(value, @r###"
-    {
-      "vectorStore": true,
-      "metrics": false,
-      "logsRoute": false,
-      "editDocumentsByFunction": false,
-      "containsFilter": false
-    }
-    "###);
 
     let (response, code) = index
         .update_settings(json!({
